@@ -5,10 +5,27 @@ using Unity.Netcode.Components;
 using XRMultiplayer;
 
 /// <summary>
-/// [v3] Lijnt de XR Origin EENMALIG uit op een vooraf gescande, fysiek herkende
-/// ruimte (Meta Quest "Ruimteconfiguratie"/Space Setup - hier: de ruimte met de
-/// naam "Studio"), in plaats van op een ArUco-marker of een los aangemaakte
-/// spatial anchor.
+/// [v5] Lijnt de XR Origin uit op een vooraf gescande, fysiek herkende ruimte (Meta Quest
+/// "Ruimteconfiguratie"/Space Setup - hier: de ruimte met de naam "Studio"), in plaats van
+/// op een ArUco-marker of een los aangemaakte spatial anchor.
+///
+/// v5: gebruikers rapporteerden dat de scene verschoven/gedraaid bleek na de ruimte te
+/// verlaten en terug te keren tijdens een lopende sessie - de EENMALIGE kalibratie (v1-v4)
+/// corrigeerde dat daarna nooit meer, want was expres eenmalig om de "wegvliegen"-bug te
+/// vermijden. Root cause is tracking-drift (inherent aan inside-out SLAM), geen bug in de
+/// uitlijn-logica zelf. Oplossing: periodieke automatische herkalibratie
+/// (m_AutoRecalibrationInterval, standaard 20s) die gewoon de bestaande, al-veilige
+/// Recalibrate()-flow hergebruikt - dus alle bestaande veiligheidschecks (plausibiliteit,
+/// yaw-only, harde teleport) gelden ook hier. Om onprettige micro-teleports door normale
+/// sensor-ruis te voorkomen als er niks echt gedreven is, worden correcties kleiner dan
+/// m_MinimumCorrectionToApply/m_MinimumRotationCorrectionToApply stilzwijgend genegeerd.
+///
+/// v4: meteen bij opstarten (v��r elke HUD-melding) zakte de speler door de vloer -
+/// de rig start op de scene-standaardpositie (wereld-origin), ver van de echte
+/// kamer-geometrie (~40m, zie v3), en zwaartekracht op de rig was al actief in de
+/// tussentijd v��r detectie+stabilisatie klaar is. Zwaartekracht staat nu bevroren
+/// vanaf Start() tot de eerste geslaagde kalibratie (zelfde fix als
+/// MarkerColocationAligner.cs v17).
 ///
 /// v2: eerste on-device test gaf "vloer te hoog" (oorzaak bleek de Y-positie van
 /// Calibration Point Object, niet dit script) - bij die gelegenheid ook de
@@ -115,6 +132,24 @@ public class RoomPlaneOriginAligner : MonoBehaviour
     [Tooltip("Maximale toegestane rotatiecorrectie (graden).")]
     [SerializeField] float m_MaxPlausibleRotationDegrees = 180f;
 
+    [Header("Automatische herkalibratie")]
+    [Tooltip("Elke zoveel seconden automatisch opnieuw proberen uit te lijnen - corrigeert " +
+             "tracking-drift die kan ontstaan als je de ruimte verlaat en terugkeert (de " +
+             "eenmalige kalibratie zelf corrigeert dat daarna nooit meer vanzelf). Zet op 0 " +
+             "om automatische herkalibratie uit te zetten.")]
+    [SerializeField] float m_AutoRecalibrationInterval = 20f;
+
+    [Tooltip("Correcties kleiner dan dit (meters) worden bij automatische herkalibratie " +
+             "genegeerd - voorkomt onprettige micro-teleports door gewone sensor-ruis als " +
+             "er eigenlijk niks gedreven is.")]
+    [SerializeField] float m_MinimumCorrectionToApply = 0.1f;
+
+    [Tooltip("Correcties kleiner dan dit (graden) worden bij automatische herkalibratie " +
+             "genegeerd, zelfde reden als hierboven.")]
+    [SerializeField] float m_MinimumRotationCorrectionToApply = 3f;
+
+    float m_TimeSinceLastCalibration = 0f;
+
     [Header("Debug")]
     [Tooltip("Toont/logt elk NIEUW gedetecteerd vlak (classificatie + afmeting) via de " +
              "HUD - zet dit tijdens de eerste testronde aan om te verifieren welke " +
@@ -144,6 +179,35 @@ public class RoomPlaneOriginAligner : MonoBehaviour
 
     CharacterController[] m_CachedCharacterControllers;
     NetworkTransform[] m_CachedNetworkTransforms;
+    Rigidbody[] m_CachedRigidbodies;
+
+    void Start()
+    {
+        // BELANGRIJK: de rig start op de scene-standaardpositie (bv. wereld-origin),
+        // die niet per se overeenkomt met echte vloer-geometrie in de buurt - deze
+        // uitlijning corrigeert dat pas na detectie + stabilisatietijd. Zonder deze
+        // freeze valt de speler in die tussentijd al door "het niets" via
+        // zwaartekracht op de rig, nog voordat de ruimte herkend is.
+        FreezeGravity();
+    }
+
+    void FreezeGravity()
+    {
+        if (m_CachedRigidbodies == null)
+            m_CachedRigidbodies = m_XROrigin.GetComponentsInChildren<Rigidbody>(true);
+
+        foreach (var rb in m_CachedRigidbodies)
+            if (rb != null) rb.useGravity = false;
+    }
+
+    void UnfreezeGravity()
+    {
+        if (m_CachedRigidbodies == null)
+            return;
+
+        foreach (var rb in m_CachedRigidbodies)
+            if (rb != null) rb.useGravity = true;
+    }
 
     void OnEnable()
     {
@@ -159,17 +223,16 @@ public class RoomPlaneOriginAligner : MonoBehaviour
 
     /// <summary>
     /// Reset de kalibratiestatus zodat het eerstvolgende passende, stabiele vlak
-    /// opnieuw gebruikt wordt om uit te lijnen. Handig als de eerste kalibratie op
-    /// een verkeerd/ruizig vlak is gebeurd. Nog niet aan een controllerknop
-    /// gekoppeld (alle voor de hand liggende knoppen zijn al in gebruik door
-    /// MarkerColocationAligner/AnchorColocationTester) - roep desgewenst zelf aan
-    /// vanuit een nieuwe input-binding.
+    /// opnieuw gebruikt wordt om uit te lijnen. Wordt automatisch periodiek aangeroepen
+    /// (zie m_AutoRecalibrationInterval/HandleAutoRecalibrationTimer) om tracking-drift op
+    /// te vangen; kan ook los aangeroepen worden vanuit een input-binding indien gewenst.
     /// </summary>
     public void Recalibrate()
     {
         m_HasCalibrated = false;
         m_WarningShown = false;
         m_ElapsedSinceStart = 0f;
+        m_TimeSinceLastCalibration = 0f;
         m_CandidatePlane = null;
         m_HasCandidateSample = false;
         m_CandidateStableElapsed = 0f;
@@ -247,7 +310,13 @@ public class RoomPlaneOriginAligner : MonoBehaviour
 
         HandleCalibrationTransition();
 
-        if (m_HasCalibrated || m_IsTransitioning || m_RejectedCurrentCandidate)
+        if (m_HasCalibrated)
+        {
+            HandleAutoRecalibrationTimer();
+            return;
+        }
+
+        if (m_IsTransitioning || m_RejectedCurrentCandidate)
             return;
 
         if (m_CandidatePlane == null)
@@ -266,6 +335,24 @@ public class RoomPlaneOriginAligner : MonoBehaviour
         }
 
         CheckCandidateStability();
+    }
+
+    /// <summary>
+    /// Corrigeert automatisch tracking-drift (bv. na de ruimte verlaten/terugkeren) door
+    /// periodiek een nieuwe, eenmalige kalibratiepoging te starten - hergebruikt de
+    /// bestaande Recalibrate()-flow (incl. alle bestaande veiligheidschecks) volledig.
+    /// </summary>
+    void HandleAutoRecalibrationTimer()
+    {
+        if (m_AutoRecalibrationInterval <= 0f)
+            return;
+
+        m_TimeSinceLastCalibration += Time.deltaTime;
+        if (m_TimeSinceLastCalibration >= m_AutoRecalibrationInterval)
+        {
+            m_TimeSinceLastCalibration = 0f;
+            Recalibrate();
+        }
     }
 
     void CheckCandidateStability()
@@ -350,6 +437,17 @@ public class RoomPlaneOriginAligner : MonoBehaviour
             return;
         }
 
+        // Te kleine afwijking om de moeite waard te zijn - waarschijnlijk gewoon sensor-ruis
+        // i.p.v. echte drift. Stilletjes niks doen (geen HUD-melding, geen teleport) i.p.v. de
+        // speler elke periodieke herkalibratie met een onnodige micro-correctie te storen.
+        if (jumpDistance < m_MinimumCorrectionToApply && jumpRotation < m_MinimumRotationCorrectionToApply)
+        {
+            Debug.Log($"[RoomPlaneOriginAligner] Afwijking te klein om te corrigeren " +
+                      $"({jumpDistance:F3}m, {jumpRotation:F1}°) - waarschijnlijk sensor-ruis, geen actie.");
+            m_HasCalibrated = true;
+            return;
+        }
+
         m_TransitionStartPos = m_XROrigin.position;
         m_TransitionStartRot = m_XROrigin.rotation;
         m_TransitionTargetPos = newPosition;
@@ -382,6 +480,7 @@ public class RoomPlaneOriginAligner : MonoBehaviour
         if (t >= 1f)
         {
             m_IsTransitioning = false;
+            UnfreezeGravity();
             Debug.Log("[RoomPlaneOriginAligner] Kalibratie VOLTOOID.");
             if (PlayerHudNotification.Instance != null)
                 PlayerHudNotification.Instance.ShowText("<b>Uitlijning voltooid</b>");

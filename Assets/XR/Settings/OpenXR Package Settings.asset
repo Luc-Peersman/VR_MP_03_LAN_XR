@@ -1012,8 +1012,8 @@ MonoBehaviour:
   - {fileID: 477633526069940682}
   - {fileID: -3639555257798576165}
   - {fileID: 3597828877523282611}
-  - {fileID: 1587317412209096436}
-  - {fileID: 6484653039446803666}
+  - {fileID: -443459937876495223}
+  - {fileID: 8988226454454876507}
   - {fileID: 4835586545296119487}
   - {fileID: -2124578999507747698}
   - {fileID: -5138540224925381704}
@@ -2592,6 +2592,32 @@ MonoBehaviour:
   required: 0
   customRuntimeLoaderName: 
   enableSubsampledLayout: 0
+--- !u!114 &8988226454454876507
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 90ae1e8c3c7a542bba339faf2e771c5a, type: 3}
+  m_Name: AndroidXRSupportFeature Android
+  m_EditorClassIdentifier: Unity.XR.AndroidOpenXR::UnityEngine.XR.OpenXR.Features.Android.AndroidXRSupportFeature
+  m_enabled: 0
+  nameUi: Android XR Support
+  version: 1.0.0
+  featureIdInternal: com.unity.openxr.feature.androidxr-support
+  openxrExtensionStrings: 
+  company: Unity Technologies
+  priority: 0
+  targetOpenXRApiVersion: 
+  required: 0
+  customRuntimeLoaderName: 
+  optionalFeatures: []
+  symmetricProjection: 0
+  optimizeBufferDiscards: 1
+  multiviewRenderRegionsOptimizationMode: 0
 --- !u!114 &9009298613189577101
 MonoBehaviour:
   m_ObjectHideFlags: 0

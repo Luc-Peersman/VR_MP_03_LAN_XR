@@ -4,9 +4,15 @@ using UnityEngine.XR;
 using Unity.Netcode.Components;
 
 /// <summary>
-/// [v16] Lijnt de XR Origin uit op basis van een gedetecteerde ArUco-marker, zodat
+/// [v17] Lijnt de XR Origin uit op basis van een gedetecteerde ArUco-marker, zodat
 /// de fysieke marker-positie overeenkomt met een vaste, door jou gedefinieerde
 /// positie in de virtuele scene.
+///
+/// v17: gebruikers meldden meteen bij opstarten (vï¿½ï¿½r elke marker-melding) door de
+/// vloer te zakken - bleek zwaartekracht op de rig die al actief was terwijl de rig
+/// nog op de scene-standaardpositie stond, ver van echte vloer-geometrie, in
+/// afwachting van de eerste (handmatige, X-knop) kalibratie. Zwaartekracht staat nu
+/// bevroren vanaf Start() tot de eerste geslaagde kalibratie.
 ///
 /// v16: 'Target World Position/Euler Angles' vervangen door een sleepbaar
 /// 'Calibration Point Object' (Transform) - visueel verplaatsen/draaien in de
@@ -18,7 +24,7 @@ using Unity.Netcode.Components;
 /// leiden tot een niet-convergerend "wegvliegen" zodra een marker vaak/
 /// betrouwbaar gedetecteerd werd), doet dit script de correctie nu EENMALIG:
 /// zodra de marker voor het eerst plausibel gedetecteerd wordt na het opstarten
-/// (of na een expliciete Recalibrate()-aanroep), wordt de Origin één keer
+/// (of na een expliciete Recalibrate()-aanroep), wordt de Origin ï¿½ï¿½n keer
 /// gecorrigeerd en stopt de aligner daarna met verder ingrijpen - totdat je
 /// opnieuw kalibreert (bv. via een controllerknop, later toe te voegen).
 ///
@@ -78,6 +84,7 @@ public class MarkerColocationAligner : MonoBehaviour
     Quaternion m_TransitionStartRot, m_TransitionTargetRot;
 
     CharacterController[] m_CachedCharacterControllers;
+    Rigidbody[] m_CachedRigidbodies;
     float m_FloorCheckTimer = 0f;
 
     void Start()
@@ -100,6 +107,31 @@ public class MarkerColocationAligner : MonoBehaviour
             m_LastAnchorRotation = m_MarkerAnchorObject.rotation;
             m_HasPreviousAnchorPose = true;
         }
+
+        // BELANGRIJK: de rig start op de scene-standaardpositie (bv. wereld-origin),
+        // die niet per se overeenkomt met echte vloer-geometrie in de buurt - de
+        // marker-uitlijning corrigeert dat pas zodra iemand kalibreert (X-knop). Zonder
+        // deze freeze valt de speler in die tussentijd al door "het niets" via
+        // zwaartekracht op de rig, nog voordat er ooit gekalibreerd is.
+        FreezeGravity();
+    }
+
+    void FreezeGravity()
+    {
+        if (m_CachedRigidbodies == null)
+            m_CachedRigidbodies = m_XROrigin.GetComponentsInChildren<Rigidbody>(true);
+
+        foreach (var rb in m_CachedRigidbodies)
+            if (rb != null) rb.useGravity = false;
+    }
+
+    void UnfreezeGravity()
+    {
+        if (m_CachedRigidbodies == null)
+            return;
+
+        foreach (var rb in m_CachedRigidbodies)
+            if (rb != null) rb.useGravity = true;
     }
 
     /// <summary>
@@ -165,7 +197,7 @@ public class MarkerColocationAligner : MonoBehaviour
             Debug.Log("[MarkerColocationAligner] Kalibratie timeout - geen marker gevonden binnen " +
                       $"{m_CalibrationTimeout}s.");
             if (PlayerHudNotification.Instance != null)
-                PlayerHudNotification.Instance.ShowText("<b>Marker niet zichtbaar</b> — probeer het opnieuw");
+                PlayerHudNotification.Instance.ShowText("<b>Marker niet zichtbaar</b> ï¿½ probeer het opnieuw");
             return;
         }
 
@@ -186,8 +218,8 @@ public class MarkerColocationAligner : MonoBehaviour
 
         // BELANGRIJKE CORRECTIE (v8): de externe library's marker-lokale as-conventie
         // wijst "naar binnen" i.p.v. naar de camera toe - dit gaf in de
-        // kalibratiemetingen een constante ~180° afwijking (marker recht voor je
-        // gaf ~180° i.p.v. 0°). We corrigeren dat hier, zodat "marker recht/normaal
+        // kalibratiemetingen een constante ~180ï¿½ afwijking (marker recht voor je
+        // gaf ~180ï¿½ i.p.v. 0ï¿½). We corrigeren dat hier, zodat "marker recht/normaal
         // neergelegd" overeenkomt met de door jou bedoelde Target World Euler Angles.
         // BELANGRIJK: gebruik alleen de YAW (rotatie om de Y-as, kijkrichting) van
         // de marker, niet de volledige 3D-rotatie. Kleine pitch/roll-ruis in de
@@ -195,7 +227,7 @@ public class MarkerColocationAligner : MonoBehaviour
         // hele speelruimte laten kantelen, wat samen met zwaartekracht/
         // CharacterController tot een verwarrend "vallen/wegvliegen"-gevoel leidt.
         float rawYaw = m_MarkerAnchorObject.rotation.eulerAngles.y;
-        float correctedYaw = rawYaw + 180f; // zelfde 180°-conventiecorrectie, nu direct op de yaw-waarde
+        float correctedYaw = rawYaw + 180f; // zelfde 180ï¿½-conventiecorrectie, nu direct op de yaw-waarde
         Quaternion correctedAnchorRotation = Quaternion.Euler(0f, correctedYaw, 0f);
 
         Matrix4x4 currentMarkerMatrix = Matrix4x4.TRS(
@@ -263,6 +295,8 @@ public class MarkerColocationAligner : MonoBehaviour
 
             if (m_ArucoTrackingCoordinator != null)
                 m_ArucoTrackingCoordinator.IsSearchingEnabled = false;
+
+            UnfreezeGravity();
 
             Debug.Log("[MarkerColocationAligner] Kalibratie VOLTOOID. Aligner is nu inactief tot Recalibrate().");
             if (PlayerHudNotification.Instance != null)
